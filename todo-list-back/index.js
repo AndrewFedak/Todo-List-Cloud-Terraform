@@ -4,7 +4,7 @@ const http = require('http');
 
 const app = express();
 
-const PORT = process.env.PORT || 3000
+const PORT = process.env.PORT || 80
 
 app.get('/get-zone', async (_req, res) => {
     const req = await axios.get('http://169.254.169.254/latest/meta-data/placement/availability-zone');
