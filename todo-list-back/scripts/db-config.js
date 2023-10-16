@@ -9,12 +9,12 @@ async function getDbConfig() {
         'credentials': {
             'accessKeyId': process.env.AWS_ACCESS_KEY_ID,
             'secretAccessKey': process.env.AWS_SECRET_KEY,
-        }
+        },
     });
     const [dbUsernameResponse, dbPasswordResponse, dbHostResponse] = await Promise.all([
         client.send(
             new GetParameterCommand({
-                Name: "DB_USERNAME"
+                Name: "DB_USERNAME",
             })
         ),
         client.send(
@@ -24,7 +24,8 @@ async function getDbConfig() {
         ),
         client.send(
             new GetParameterCommand({
-                Name: "DB_HOST"
+                Name: "DB_HOST",
+                'WithDecryption': true
             })
         ),
     ])
