@@ -1,16 +1,12 @@
 const fs = require('fs')
 const { SSMClient, GetParameterCommand } = require("@aws-sdk/client-ssm");
-const dotenv = require('dotenv')
+// const { fromIni } = require("@aws-sdk/credential-providers");
 
 async function getDbConfig() {
-    dotenv.config({ path: './.aws.env' })
+    // Profile config taken from:  ~/.aws/config
+    // Profile credentials taken from:  ~/.aws/credentials
+    const client = new SSMClient();
 
-    const client = new SSMClient({
-        'credentials': {
-            'accessKeyId': process.env.AWS_ACCESS_KEY_ID,
-            'secretAccessKey': process.env.AWS_SECRET_KEY,
-        },
-    });
     const [dbUsernameResponse, dbPasswordResponse, dbHostResponse] = await Promise.all([
         client.send(
             new GetParameterCommand({
