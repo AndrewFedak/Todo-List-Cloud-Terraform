@@ -17,12 +17,14 @@ sudo apt install nodejs -y
 git clone https://github.com/AndrewFedak/todo-list-app.git
 
 # Change directory to the todo-list-back folder
-cd todo-list-back
+cd ./todo-list-app/todo-list-back
 
 echo "I was here"
 
 # Install project dependencies
 npm install
 
+export NODE_ENV=production
+export PORT=80
 # Start the server (adjust this command according to your project's requirements)
 npm start
