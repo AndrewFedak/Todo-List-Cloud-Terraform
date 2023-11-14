@@ -181,7 +181,49 @@ resource "aws_lb_listener" "web" {
 #   public_key = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQD3F6tyPEFEzV0LX3X8BsXdMsQz1x2cEikKDEY0aIj41qgxMCP/iteneqXSIFZBp5vizPvaoIR3Um9xK7PGoW8giupGn+EPuxIA4cDM4vzOqOkiMPhz5XK0whEjkVzTo4+S0puvDZuwIsdiW9mxhJc7tgBNL0cYlWSYVkz4G/fslNfRPW5mYAM49f4fhtxPb5ok4Q2Lg9dPKVHO/Bgeu5woMc7RY0p1ej6D4CKFE6lymSDJpW0YHX/wqE9+cfEauh7xZcG0q9t2ta6F6fmX0agvpFyZo8aFbXeUBr7osSCJNgvavWbM/06niWrOvYX2xwWdhXmXSrbX8ZbabVohBK41 email@example.com"
 # }
 
-# Launch Template
+# Create RDS instance with PostgreSQL engine
+
+# Create S3 bucket
+resource "aws_s3_bucket" "main" {
+  bucket = "todo-list-terraform"
+
+  tags = {
+    Name = "TodoListBucket"
+  }
+}
+
+# Create IAM role for EC2 instance
+data "aws_iam_policy_document" "assume_role" {
+  statement {
+    effect = "Allow"
+
+    principals {
+      type        = "Service"
+      identifiers = ["ec2.amazonaws.com"]
+    }
+
+    actions = ["sts:AssumeRole"]
+  }
+}
+
+# IAM role for RDS and S3 access
+resource "aws_iam_role" "ec2_s3_rds_role" {
+  name = "ec2_role"
+
+  assume_role_policy = data.aws_iam_policy_document.assume_role.json
+}
+
+resource "aws_iam_role_policy_attachment" "rds_policy" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonRDSFullAccess"
+  role       = aws_iam_role.ec2_s3_rds_role.name
+}
+
+resource "aws_iam_role_policy_attachment" "s3_policy" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonS3FullAccess"
+  role       = aws_iam_role.ec2_s3_rds_role.name
+}
+
+# Launch template
 resource "aws_launch_template" "main" {
   name            = "${local.tag_prefix}_Web_Server_Template"
   default_version = 1
@@ -189,9 +231,14 @@ resource "aws_launch_template" "main" {
   instance_type   = "t3.micro"
 
   vpc_security_group_ids = [aws_security_group.web_sg.id]
+
   # key_name = ""
 
+  iam_instance_profile {
+    name = aws_iam_role.ec2_s3_rds_role.name
+  }
   user_data = filebase64("${path.module}/instance-user-data.sh")
+
   tag_specifications {
     resource_type = "instance"
     tags = {
@@ -203,8 +250,8 @@ resource "aws_launch_template" "main" {
 # Auto Scaling Group
 resource "aws_autoscaling_group" "main" {
   name                      = "${local.tag_prefix}_Auto_Scaling_Group"
-  desired_capacity          = 0
-  min_size                  = 0
+  desired_capacity          = 2
+  min_size                  = 1
   max_size                  = 4
   health_check_type         = "EC2"
   health_check_grace_period = 300
@@ -220,5 +267,155 @@ resource "aws_autoscaling_group" "main" {
   depends_on        = [aws_lb.main]
 }
 
+resource "aws_db_subnet_group" "main" {
+  name       = "main"
+  subnet_ids = aws_subnet.private[*].id
 
-# TODO: RDS, S3, APIGW, Lambda, Cloudfront?
+  tags = {
+    Name = "My DB subnet group"
+  }
+}
+
+resource "aws_db_instance" "my_rds_instance" {
+  identifier             = "myrdsinstance"
+
+  allocated_storage      = 20
+  storage_type           = "gp2"
+  
+  db_name                = "postgres"
+  
+  engine                 = "postgres"
+  engine_version         = "15.3"
+  instance_class         = "db.t3.micro"
+  
+  username               = "dbuser"
+  password               = "dbpassword"
+  
+  db_subnet_group_name   = aws_db_subnet_group.main.id
+  
+  publicly_accessible    = false
+  skip_final_snapshot    = true
+  
+  vpc_security_group_ids = [aws_security_group.data_sg.id]
+
+  tags = {
+    Name = "MyRDSInstance"
+  }
+}
+
+# Create IAM role for Lambda execution
+data "aws_iam_policy_document" "lambda_assume_role" {
+  statement {
+    effect = "Allow"
+
+    principals {
+      type        = "Service"
+      identifiers = ["lambda.amazonaws.com"]
+    }
+
+    actions = ["sts:AssumeRole"]
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_execution_policy" {
+  role       = aws_iam_role.lambda_execution_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role" "lambda_execution_role" {
+  name = "lambda_execution_role"
+
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+data "archive_file" "front_end" {
+  type = "zip"
+
+  source_dir  = "${path.module}/../todo-list-front"
+  output_path = "${path.module}/todo-list-front.zip"
+}
+
+resource "aws_s3_object" "front_end" {
+  bucket = aws_s3_bucket.main.id
+
+  key    = "front-end.zip"
+  source = data.archive_file.front_end.output_path
+
+  etag = filemd5(data.archive_file.front_end.output_path)
+}
+
+resource "aws_lambda_function" "front_end" {
+  function_name = "FrontEnd"
+
+  s3_bucket = aws_s3_bucket.main.id
+  s3_key    = aws_s3_object.front_end.key
+
+  runtime = "nodejs14.x"
+  handler = "hello.handler"
+
+  source_code_hash = data.archive_file.front_end.output_base64sha256
+
+  role = aws_iam_role.lambda_execution_role.arn
+}
+
+resource "aws_lambda_permission" "api_gw" {
+  statement_id  = "AllowExecutionFromAPIGateway"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.front_end.function_name
+  principal     = "apigateway.amazonaws.com"
+
+  source_arn = "${aws_apigatewayv2_api.main.execution_arn}/*/*"
+}
+
+# Create API Gateway
+resource "aws_apigatewayv2_api" "main" {
+  name          = "Main_HTTP_APIGW"
+  protocol_type = "HTTP"
+}
+
+resource "aws_apigatewayv2_stage" "dev" {
+  api_id      = aws_apigatewayv2_api.main.id
+  name        = "dev"
+  auto_deploy = true
+}
+
+resource "aws_apigatewayv2_stage" "test" {
+  api_id      = aws_apigatewayv2_api.main.id
+  name        = "test"
+  auto_deploy = true
+}
+
+# Front end integration
+resource "aws_apigatewayv2_integration" "front_end" {
+  api_id = aws_apigatewayv2_api.main.id
+
+  integration_uri    = aws_lambda_function.front_end.invoke_arn
+  integration_type   = "AWS_PROXY"
+  integration_method = "ANY"
+}
+
+resource "aws_apigatewayv2_route" "front_end" {
+  api_id = aws_apigatewayv2_api.main.id
+
+  route_key = "ANY /{proxy+}"
+  target    = "integrations/${aws_apigatewayv2_integration.front_end.id}"
+}
+
+# Back end integration
+resource "aws_apigatewayv2_integration" "back_end" {
+  api_id = aws_apigatewayv2_api.main.id
+
+  integration_uri  = aws_lb_listener.web.arn
+  integration_type = "HTTP_PROXY"
+  integration_method = "ANY"
+}
+
+resource "aws_apigatewayv2_route" "back_end" {
+  api_id = aws_apigatewayv2_api.main.id
+
+  route_key = "ANY /api/{proxy+}"
+  target    = "integrations/${aws_apigatewayv2_integration.back_end.id}"
+}
+
+
+# TODO: Route53, Cloudfront?

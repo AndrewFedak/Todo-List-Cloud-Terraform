@@ -6,7 +6,9 @@ const { initDb } = require('./config/db');
 async function bootstrap() {
     const app = express();
     
-    await initDb()
+    try {
+        await initDb()
+    } catch(e) {}
     
     app.use(express.json())
 
