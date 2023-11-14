@@ -25,6 +25,6 @@ echo "I was here"
 npm install
 
 export NODE_ENV=production
-export PORT=3000
+export PORT=80
 # Start the server (adjust this command according to your project's requirements)
 npm start
