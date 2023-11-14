@@ -22,30 +22,12 @@ resource "aws_vpc" "main" {
   }
 }
 
-# Public subnet
+## Public subnets
 resource "aws_internet_gateway" "main" {
   vpc_id = aws_vpc.main.id
 
   tags = {
     Name = "${local.tag_prefix}_InternetGateway"
-  }
-}
-
-resource "aws_route_table" "public" {
-  vpc_id = aws_vpc.main.id
-
-  route {
-    cidr_block = "10.0.0.0/16"
-    gateway_id = "local"
-  }
-
-  route {
-    cidr_block = "0.0.0.0/16"
-    gateway_id = aws_internet_gateway.main.id
-  }
-
-  tags = {
-    Name = "${local.tag_prefix}_Web_Route_Table"
   }
 }
 
@@ -62,6 +44,24 @@ resource "aws_subnet" "public" {
   }
 }
 
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.main.id
+
+  route {
+    cidr_block = "10.0.0.0/16"
+    gateway_id = "local"
+  }
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.main.id
+  }
+
+  tags = {
+    Name = "${local.tag_prefix}_Web_Route_Table"
+  }
+}
+
 resource "aws_route_table_association" "web" {
   count = length(aws_subnet.public)
 
@@ -69,7 +69,7 @@ resource "aws_route_table_association" "web" {
   route_table_id = aws_route_table.public.id
 }
 
-# Private Subnets
+## Private subnets
 resource "aws_subnet" "private" {
   count = 3
 
@@ -83,7 +83,6 @@ resource "aws_subnet" "private" {
   }
 }
 
-
 # Security Groups
 resource "aws_security_group" "web_lb_sg" {
   name        = "${local.tag_prefix}_Web_LB_SG"
@@ -95,6 +94,14 @@ resource "aws_security_group" "web_lb_sg" {
     to_port     = 80
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port        = 0
+    to_port          = 0
+    protocol         = "-1"
+    cidr_blocks      = ["0.0.0.0/0"]
+    ipv6_cidr_blocks = ["::/0"]
   }
 
   tags = {
@@ -112,6 +119,21 @@ resource "aws_security_group" "web_sg" {
     to_port         = 80
     protocol        = "tcp"
     security_groups = [aws_security_group.web_lb_sg.id]
+  }
+
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port        = 0
+    to_port          = 0
+    protocol         = "-1"
+    cidr_blocks      = ["0.0.0.0/0"]
+    ipv6_cidr_blocks = ["::/0"]
   }
 
   tags = {
@@ -147,7 +169,7 @@ resource "aws_lb" "main" {
   enable_deletion_protection = false
 }
 
-# Target Group
+## Target Group
 resource "aws_lb_target_group" "main" {
   name     = "MainTargetGroup"
   port     = 80
@@ -164,7 +186,7 @@ resource "aws_lb_target_group" "main" {
   }
 }
 
-# Listeners and rules (Application Load Balancer (ALB) -> Target Group)
+## Listeners and rules (Application Load Balancer (ALB) -> Target Group)
 resource "aws_lb_listener" "web" {
   load_balancer_arn = aws_lb.main.arn
   port              = "80"
@@ -176,14 +198,7 @@ resource "aws_lb_listener" "web" {
   }
 }
 
-# resource "aws_key_pair" "deployer" {
-#   key_name   = "deployer-key"
-#   public_key = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQD3F6tyPEFEzV0LX3X8BsXdMsQz1x2cEikKDEY0aIj41qgxMCP/iteneqXSIFZBp5vizPvaoIR3Um9xK7PGoW8giupGn+EPuxIA4cDM4vzOqOkiMPhz5XK0whEjkVzTo4+S0puvDZuwIsdiW9mxhJc7tgBNL0cYlWSYVkz4G/fslNfRPW5mYAM49f4fhtxPb5ok4Q2Lg9dPKVHO/Bgeu5woMc7RY0p1ej6D4CKFE6lymSDJpW0YHX/wqE9+cfEauh7xZcG0q9t2ta6F6fmX0agvpFyZo8aFbXeUBr7osSCJNgvavWbM/06niWrOvYX2xwWdhXmXSrbX8ZbabVohBK41 email@example.com"
-# }
-
-# Create RDS instance with PostgreSQL engine
-
-# Create S3 bucket
+# S3
 resource "aws_s3_bucket" "main" {
   bucket = "todo-list-terraform"
 
@@ -192,21 +207,36 @@ resource "aws_s3_bucket" "main" {
   }
 }
 
-# Create IAM role for EC2 instance
-data "aws_iam_policy_document" "assume_role" {
-  statement {
-    effect = "Allow"
+# Launch template
+resource "aws_launch_template" "main" {
+  name            = "${local.tag_prefix}_Web_Server_Template"
+  default_version = 1
+  image_id        = "ami-0989fb15ce71ba39e" # Replace with your desired AMI ID
+  instance_type   = "t3.micro"
 
-    principals {
-      type        = "Service"
-      identifiers = ["ec2.amazonaws.com"]
+  vpc_security_group_ids = [aws_security_group.web_sg.id]
+
+  key_name = "EC2 Tutorial"
+
+  iam_instance_profile {
+    name = aws_iam_instance_profile.ec2_s3_rds_instance_profile.name
+  }
+  user_data = filebase64("${path.module}/instance-user-data.sh")
+
+  tag_specifications {
+    resource_type = "instance"
+    tags = {
+      Name = "${local.tag_prefix}_Web_Server_Template"
     }
-
-    actions = ["sts:AssumeRole"]
   }
 }
+## EC2 Instance Profile
+resource "aws_iam_instance_profile" "ec2_s3_rds_instance_profile" {
+  name = "ec2_instance_profile"
+  role = aws_iam_role.ec2_s3_rds_role.name
+}
 
-# IAM role for RDS and S3 access
+## IAM role for EC2 instance (RDS and S3 access)
 resource "aws_iam_role" "ec2_s3_rds_role" {
   name = "ec2_role"
 
@@ -223,27 +253,17 @@ resource "aws_iam_role_policy_attachment" "s3_policy" {
   role       = aws_iam_role.ec2_s3_rds_role.name
 }
 
-# Launch template
-resource "aws_launch_template" "main" {
-  name            = "${local.tag_prefix}_Web_Server_Template"
-  default_version = 1
-  image_id        = "ami-0989fb15ce71ba39e" # Replace with your desired AMI ID
-  instance_type   = "t3.micro"
+### Trust relationship policy
+data "aws_iam_policy_document" "assume_role" {
+  statement {
+    effect = "Allow"
 
-  vpc_security_group_ids = [aws_security_group.web_sg.id]
-
-  # key_name = ""
-
-  iam_instance_profile {
-    name = aws_iam_role.ec2_s3_rds_role.name
-  }
-  user_data = filebase64("${path.module}/instance-user-data.sh")
-
-  tag_specifications {
-    resource_type = "instance"
-    tags = {
-      Name = "${local.tag_prefix}_Web_Server_Template"
+    principals {
+      type        = "Service"
+      identifiers = ["ec2.amazonaws.com"]
     }
+
+    actions = ["sts:AssumeRole"]
   }
 }
 
@@ -267,6 +287,35 @@ resource "aws_autoscaling_group" "main" {
   depends_on        = [aws_lb.main]
 }
 
+# RDS
+resource "aws_db_instance" "my_rds_instance" {
+  identifier = "myrdsinstance"
+
+  allocated_storage = 20
+  storage_type      = "gp2"
+
+  db_name = "postgres"
+
+  engine         = "postgres"
+  engine_version = "15.3"
+  instance_class = "db.t3.micro"
+
+  username = "dbuser"
+  password = "dbpassword"
+
+  db_subnet_group_name = aws_db_subnet_group.main.id
+
+  publicly_accessible = false
+  skip_final_snapshot = true
+
+  vpc_security_group_ids = [aws_security_group.data_sg.id]
+
+  tags = {
+    Name = "MyRDSInstance"
+  }
+}
+
+## DB Subnet group
 resource "aws_db_subnet_group" "main" {
   name       = "main"
   subnet_ids = aws_subnet.private[*].id
@@ -276,34 +325,44 @@ resource "aws_db_subnet_group" "main" {
   }
 }
 
-resource "aws_db_instance" "my_rds_instance" {
-  identifier             = "myrdsinstance"
+# Lambda (name=FrontEnd)
+resource "aws_lambda_function" "front_end" {
+  function_name = "FrontEnd"
 
-  allocated_storage      = 20
-  storage_type           = "gp2"
-  
-  db_name                = "postgres"
-  
-  engine                 = "postgres"
-  engine_version         = "15.3"
-  instance_class         = "db.t3.micro"
-  
-  username               = "dbuser"
-  password               = "dbpassword"
-  
-  db_subnet_group_name   = aws_db_subnet_group.main.id
-  
-  publicly_accessible    = false
-  skip_final_snapshot    = true
-  
-  vpc_security_group_ids = [aws_security_group.data_sg.id]
+  s3_bucket = aws_s3_bucket.main.id
+  s3_key    = aws_s3_object.front_end.key
 
-  tags = {
-    Name = "MyRDSInstance"
-  }
+  runtime = "nodejs14.x"
+  handler = "hello.handler"
+
+  source_code_hash = data.archive_file.front_end.output_base64sha256
+
+  role = aws_iam_role.lambda_execution_role.arn
 }
 
-# Create IAM role for Lambda execution
+## Resource-based policy
+resource "aws_lambda_permission" "api_gw" {
+  statement_id  = "AllowExecutionFromAPIGateway"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.front_end.function_name
+  principal     = "apigateway.amazonaws.com"
+
+  source_arn = "${aws_apigatewayv2_api.main.execution_arn}/*/*"
+}
+
+## IAM Role for Lambda
+resource "aws_iam_role" "lambda_execution_role" {
+  name = "lambda_execution_role"
+
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_execution_policy" {
+  role       = aws_iam_role.lambda_execution_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+### Trust relationship policy
 data "aws_iam_policy_document" "lambda_assume_role" {
   statement {
     effect = "Allow"
@@ -317,17 +376,7 @@ data "aws_iam_policy_document" "lambda_assume_role" {
   }
 }
 
-resource "aws_iam_role_policy_attachment" "lambda_execution_policy" {
-  role       = aws_iam_role.lambda_execution_role.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
-}
-
-resource "aws_iam_role" "lambda_execution_role" {
-  name = "lambda_execution_role"
-
-  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
-}
-
+## Upload Lambda code
 data "archive_file" "front_end" {
   type = "zip"
 
@@ -344,35 +393,13 @@ resource "aws_s3_object" "front_end" {
   etag = filemd5(data.archive_file.front_end.output_path)
 }
 
-resource "aws_lambda_function" "front_end" {
-  function_name = "FrontEnd"
-
-  s3_bucket = aws_s3_bucket.main.id
-  s3_key    = aws_s3_object.front_end.key
-
-  runtime = "nodejs14.x"
-  handler = "hello.handler"
-
-  source_code_hash = data.archive_file.front_end.output_base64sha256
-
-  role = aws_iam_role.lambda_execution_role.arn
-}
-
-resource "aws_lambda_permission" "api_gw" {
-  statement_id  = "AllowExecutionFromAPIGateway"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.front_end.function_name
-  principal     = "apigateway.amazonaws.com"
-
-  source_arn = "${aws_apigatewayv2_api.main.execution_arn}/*/*"
-}
-
-# Create API Gateway
+# API Gateway
 resource "aws_apigatewayv2_api" "main" {
   name          = "Main_HTTP_APIGW"
   protocol_type = "HTTP"
 }
 
+## Stages
 resource "aws_apigatewayv2_stage" "dev" {
   api_id      = aws_apigatewayv2_api.main.id
   name        = "dev"
@@ -385,13 +412,13 @@ resource "aws_apigatewayv2_stage" "test" {
   auto_deploy = true
 }
 
-# Front end integration
+# Front end integration (Lambda)
 resource "aws_apigatewayv2_integration" "front_end" {
   api_id = aws_apigatewayv2_api.main.id
 
   integration_uri    = aws_lambda_function.front_end.invoke_arn
   integration_type   = "AWS_PROXY"
-  integration_method = "ANY"
+  integration_method = "POST"
 }
 
 resource "aws_apigatewayv2_route" "front_end" {
@@ -401,13 +428,26 @@ resource "aws_apigatewayv2_route" "front_end" {
   target    = "integrations/${aws_apigatewayv2_integration.front_end.id}"
 }
 
-# Back end integration
+# Back end integration (Load balancer)
+resource "aws_apigatewayv2_vpc_link" "example" {
+  name               = "example"
+  security_group_ids = [aws_security_group.web_lb_sg.id]
+  subnet_ids         = aws_subnet.public[*].id
+
+  tags = {
+    Usage = "example"
+  }
+}
+
 resource "aws_apigatewayv2_integration" "back_end" {
   api_id = aws_apigatewayv2_api.main.id
 
-  integration_uri  = aws_lb_listener.web.arn
-  integration_type = "HTTP_PROXY"
+  integration_uri    = aws_lb_listener.web.arn
+  integration_type   = "HTTP_PROXY"
   integration_method = "ANY"
+
+  connection_type = "VPC_LINK"
+  connection_id   = aws_apigatewayv2_vpc_link.example.id
 }
 
 resource "aws_apigatewayv2_route" "back_end" {
@@ -416,6 +456,5 @@ resource "aws_apigatewayv2_route" "back_end" {
   route_key = "ANY /api/{proxy+}"
   target    = "integrations/${aws_apigatewayv2_integration.back_end.id}"
 }
-
 
 # TODO: Route53, Cloudfront?
