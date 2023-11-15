@@ -158,6 +158,44 @@ resource "aws_security_group" "data_sg" {
   }
 }
 
+# S3
+resource "aws_s3_bucket" "main" {
+  bucket = "todo-list-terraform"
+
+  tags = {
+    Name = "TodoListBucket"
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "main" {
+  bucket = aws_s3_bucket.main.id
+}
+
+resource "aws_s3_bucket_policy" "allow_lb_logs" {
+  bucket = aws_s3_bucket.main.id
+  policy = data.aws_iam_policy_document.allow_read_write.json
+}
+
+data "aws_iam_policy_document" "allow_read_write" {
+  statement {
+    
+    principals {
+      type = "*"
+      identifiers = ["*"]
+    }
+    
+    actions = [
+      "s3:GetObject",
+      "s3:PutObject",
+    ]
+
+    resources = [
+      aws_s3_bucket.main.arn,
+      "${aws_s3_bucket.main.arn}/*",
+    ]
+  }
+}
+
 # Application Load Balancer (ALB)
 resource "aws_lb" "main" {
   name               = "MainALB"
@@ -167,6 +205,16 @@ resource "aws_lb" "main" {
   subnets            = aws_subnet.public[*].id
 
   enable_deletion_protection = false
+
+  access_logs {
+    enabled = false
+    bucket  = aws_s3_bucket.main.id
+    prefix  = "main-lb-access-logs"
+  }
+
+  depends_on = [
+    aws_s3_bucket_policy.allow_lb_logs
+  ]
 }
 
 ## Target Group
@@ -195,15 +243,6 @@ resource "aws_lb_listener" "web" {
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.main.arn
-  }
-}
-
-# S3
-resource "aws_s3_bucket" "main" {
-  bucket = "todo-list-terraform"
-
-  tags = {
-    Name = "TodoListBucket"
   }
 }
 
@@ -412,7 +451,7 @@ resource "aws_apigatewayv2_stage" "test" {
   auto_deploy = true
 }
 
-# Front end integration (Lambda)
+## Front end integration (Lambda)
 resource "aws_apigatewayv2_integration" "front_end" {
   api_id = aws_apigatewayv2_api.main.id
 
@@ -424,11 +463,11 @@ resource "aws_apigatewayv2_integration" "front_end" {
 resource "aws_apigatewayv2_route" "front_end" {
   api_id = aws_apigatewayv2_api.main.id
 
-  route_key = "ANY /{proxy+}"
+  route_key = "$default"
   target    = "integrations/${aws_apigatewayv2_integration.front_end.id}"
 }
 
-# Back end integration (Load balancer)
+## Back end integration (Load balancer)
 resource "aws_apigatewayv2_vpc_link" "example" {
   name               = "example"
   security_group_ids = [aws_security_group.web_lb_sg.id]
@@ -442,12 +481,10 @@ resource "aws_apigatewayv2_vpc_link" "example" {
 resource "aws_apigatewayv2_integration" "back_end" {
   api_id = aws_apigatewayv2_api.main.id
 
-  integration_uri    = aws_lb_listener.web.arn
+  integration_uri    = "http://${aws_lb.main.dns_name}/{proxy}" # NOT GOOD. SHOULD USED VPC_LINK TO BIND APIGW with ALB that are in saperate VPCs
+                                                                # APIGW -> VPC LINK -> ALB
   integration_type   = "HTTP_PROXY"
   integration_method = "ANY"
-
-  connection_type = "VPC_LINK"
-  connection_id   = aws_apigatewayv2_vpc_link.example.id
 }
 
 resource "aws_apigatewayv2_route" "back_end" {
