@@ -29,6 +29,9 @@ async function bootstrap() {
     app.get('/health', async (_req, res) => {
         res.send('Healthy')
     })
+    app.get('*', async (_req, res) => {
+        res.send('Here is a back end')
+    })
 
     const PORT = process.env.PORT
     app.listen(PORT, () => {
