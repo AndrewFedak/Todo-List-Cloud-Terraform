@@ -178,12 +178,12 @@ resource "aws_s3_bucket_policy" "allow_lb_logs" {
 
 data "aws_iam_policy_document" "allow_read_write" {
   statement {
-    
+
     principals {
-      type = "*"
+      type        = "*"
       identifiers = ["*"]
     }
-    
+
     actions = [
       "s3:GetObject",
       "s3:PutObject",
@@ -199,7 +199,7 @@ data "aws_iam_policy_document" "allow_read_write" {
 # Application Load Balancer (ALB)
 resource "aws_lb" "main" {
   name               = "MainALB"
-  internal           = false
+  internal           = true
   load_balancer_type = "application"
   security_groups    = [aws_security_group.web_lb_sg.id]
   subnets            = aws_subnet.public[*].id
@@ -309,8 +309,8 @@ data "aws_iam_policy_document" "assume_role" {
 # Auto Scaling Group
 resource "aws_autoscaling_group" "main" {
   name                      = "${local.tag_prefix}_Auto_Scaling_Group"
-  desired_capacity          = 0
-  min_size                  = 0
+  desired_capacity          = 2
+  min_size                  = 1
   max_size                  = 4
   health_check_type         = "EC2"
   health_check_grace_period = 300
@@ -379,6 +379,23 @@ resource "aws_lambda_function" "front_end" {
   role = aws_iam_role.lambda_execution_role.arn
 }
 
+## Upload Lambda code
+data "archive_file" "front_end" {
+  type = "zip"
+
+  source_dir  = "${path.module}/../todo-list-front"
+  output_path = "${path.module}/todo-list-front.zip"
+}
+
+resource "aws_s3_object" "front_end" {
+  bucket = aws_s3_bucket.main.id
+
+  key    = "front-end.zip"
+  source = data.archive_file.front_end.output_path
+
+  etag = filemd5(data.archive_file.front_end.output_path)
+}
+
 ## Resource-based policy
 resource "aws_lambda_permission" "api_gw" {
   statement_id  = "AllowExecutionFromAPIGateway"
@@ -413,23 +430,6 @@ data "aws_iam_policy_document" "lambda_assume_role" {
 
     actions = ["sts:AssumeRole"]
   }
-}
-
-## Upload Lambda code
-data "archive_file" "front_end" {
-  type = "zip"
-
-  source_dir  = "${path.module}/../todo-list-front"
-  output_path = "${path.module}/todo-list-front.zip"
-}
-
-resource "aws_s3_object" "front_end" {
-  bucket = aws_s3_bucket.main.id
-
-  key    = "front-end.zip"
-  source = data.archive_file.front_end.output_path
-
-  etag = filemd5(data.archive_file.front_end.output_path)
 }
 
 # API Gateway
@@ -481,10 +481,16 @@ resource "aws_apigatewayv2_vpc_link" "example" {
 resource "aws_apigatewayv2_integration" "back_end" {
   api_id = aws_apigatewayv2_api.main.id
 
-  integration_uri    = "http://${aws_lb.main.dns_name}/{proxy}" # NOT GOOD. SHOULD USED VPC_LINK TO BIND APIGW with ALB that are in saperate VPCs
-                                                                # APIGW -> VPC LINK -> ALB
+  integration_uri    = aws_lb_listener.web.arn
   integration_type   = "HTTP_PROXY"
   integration_method = "ANY"
+
+  connection_type = "VPC_LINK"
+  connection_id   = aws_apigatewayv2_vpc_link.example.id
+
+  request_parameters = {
+    "overwrite:path" = "$request.path"
+  }
 }
 
 resource "aws_apigatewayv2_route" "back_end" {
