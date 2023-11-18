@@ -309,8 +309,8 @@ data "aws_iam_policy_document" "assume_role" {
 # Auto Scaling Group
 resource "aws_autoscaling_group" "main" {
   name                      = "${local.tag_prefix}_Auto_Scaling_Group"
-  desired_capacity          = 2
-  min_size                  = 1
+  desired_capacity          = 0
+  min_size                  = 0
   max_size                  = 4
   health_check_type         = "EC2"
   health_check_grace_period = 300
