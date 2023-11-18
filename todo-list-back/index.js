@@ -16,7 +16,7 @@ async function bootstrap() {
 
     TodosController.init(app)
 
-    app.get('/get-zone', async (_req, res) => {
+    app.get('/dev/api/get-zone', async (_req, res) => {
         try {
             const req = await axios.get('http://169.254.169.254/latest/meta-data/placement/availability-zone');
             res.send(req.data)
@@ -29,6 +29,7 @@ async function bootstrap() {
     app.get('/health', async (_req, res) => {
         res.send('Healthy')
     })
+
     app.get('*', async (_req, res) => {
         res.send('Here is a back end')
     })
