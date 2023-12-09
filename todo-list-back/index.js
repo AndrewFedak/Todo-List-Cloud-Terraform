@@ -16,7 +16,13 @@ async function bootstrap() {
 
     TodosController.init(app)
 
-    app.get('/get-zone', async (_req, res) => {
+
+    app.get('/health', async (_req, res) => {
+        res.send('Healthy')
+    })
+
+    const router = express.Router();
+    router.get('/get-zone', async (_req, res) => {
         try {
             const req = await axios.get('http://169.254.169.254/latest/meta-data/placement/availability-zone');
             res.send(req.data)
@@ -25,9 +31,10 @@ async function bootstrap() {
             res.status(500).send('Something went wrong')
         }
     })
+    app.use('/api', router)
 
-    app.get('/health', async (_req, res) => {
-        res.send('Healthy')
+    app.get('*', async (_req, res) => {
+        res.send('Here is a back end')
     })
 
     const PORT = process.env.PORT
