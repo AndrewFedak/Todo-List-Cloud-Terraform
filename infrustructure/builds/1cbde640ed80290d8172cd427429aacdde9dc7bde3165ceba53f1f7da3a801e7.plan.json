@@ -1,1 +1,0 @@
-{"filename": "builds\\1cbde640ed80290d8172cd427429aacdde9dc7bde3165ceba53f1f7da3a801e7.zip", "runtime": "nodejs14.x", "artifacts_dir": "builds", "build_plan": [["zip", "../todo-list-front/src", null]]}

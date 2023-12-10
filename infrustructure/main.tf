@@ -23,10 +23,11 @@ module "vpc" {
 
 # S3
 module "s3_bucket" {
-  source = "terraform-aws-modules/s3-bucket/aws"
+  source  = "terraform-aws-modules/s3-bucket/aws"
+  version = "3.15.1"
 
   bucket                  = "todo-list-terraform"
-  attach_public_policy    = false
+  attach_public_policy    = true
   block_public_acls       = false
   block_public_policy     = false
   ignore_public_acls      = false
@@ -42,7 +43,6 @@ module "s3_bucket" {
 
 data "aws_iam_policy_document" "allow_read_write" {
   statement {
-
     principals {
       type        = "*"
       identifiers = ["*"]
@@ -180,16 +180,17 @@ resource "aws_security_group" "data_sg" {
   description = "Allow Web Instances inbound traffic"
   vpc_id      = module.vpc.vpc_id
 
-  ingress {
-    from_port       = 80
-    to_port         = 80
-    protocol        = "tcp"
-    security_groups = [aws_security_group.web_sg.id]
-  }
-
   tags = {
     Name = "${local.tag_prefix}_Data_SG"
   }
+}
+resource "aws_security_group_rule" "data_sg" {
+  type                     = "ingress"
+  from_port                = 80
+  to_port                  = 80
+  protocol                 = "tcp"
+  source_security_group_id = aws_security_group.web_sg.id
+  security_group_id        = aws_security_group.data_sg.id
 }
 
 # Launch template
@@ -199,14 +200,19 @@ resource "aws_launch_template" "main" {
   image_id        = "ami-0989fb15ce71ba39e" # Replace with your desired AMI ID
   instance_type   = "t3.micro"
 
-  vpc_security_group_ids = [aws_security_group.web_sg.id]
-
   key_name = "EC2 Tutorial"
 
   iam_instance_profile {
     name = aws_iam_instance_profile.ec2_s3_rds_instance_profile.name
   }
   user_data = filebase64("${path.module}/instance-user-data.sh")
+
+  network_interfaces {
+    device_index                = 0
+    associate_public_ip_address = true
+    security_groups             = [aws_security_group.web_sg.id]
+  }
+  # vpc_security_group_ids = [aws_security_group.web_sg.id] # Conflicts with network_interfaces.security_groups
 
   tag_specifications {
     resource_type = "instance"
@@ -258,24 +264,25 @@ module "asg" {
 
   # Autoscaling group
   name                      = "${local.tag_prefix}_Auto_Scaling_Group"
-  min_size                  = 0
-  max_size                  = 4
-  desired_capacity          = 0
-  health_check_type         = "EC2"
+  min_size                  = 1
+  max_size                  = 1
+  desired_capacity          = 1
+  health_check_type         = "EC2" #or "ELB" to check ELB health check level to have more granuality of EC2 instances responsiveness
   health_check_grace_period = 300
   force_delete              = true
-  vpc_zone_identifier = module.vpc.public_subnets
+  vpc_zone_identifier       = module.vpc.public_subnets
 
   # Launch template
-  create_launch_template = false
-  launch_template_id = aws_launch_template.main.id
+  create_launch_template  = false
+  launch_template_id      = aws_launch_template.main.id
+  launch_template_version = aws_launch_template.main.latest_version
 
   target_group_arns = [for k, v in module.alb.target_groups : v.arn]
 }
 
 # RDS
 module "db" {
-  source     = "terraform-aws-modules/rds/aws"
+  source  = "terraform-aws-modules/rds/aws"
   version = "6.3.0"
 
   identifier = "myrdsinstance"
@@ -302,10 +309,46 @@ module "db" {
   subnet_ids             = module.vpc.private_subnets
 
   # DB parameter group
-  family = "postgres15.3"
+  family = "postgres15"
 
   tags = {
     Name = "MyRDSInstance"
+  }
+}
+
+
+# Lambda (name=FrontEnd)
+module "lambda_function" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "6.5.0"
+
+  function_name = "my-lambda1"
+  description   = "My awesome lambda function"
+  handler       = "hello.handler"
+  runtime       = "nodejs14.x"
+  publish       = true
+
+  store_on_s3 = true
+  s3_bucket   = module.s3_bucket.s3_bucket_id
+  source_path = "../todo-list-front/lambda"
+
+  ## IAM role
+  role_name = "lambda_execution_role"
+  policy    = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+  ### Trust relationship policy
+  trusted_entities = ["lambda.amazonaws.com"]
+
+  ## Resource-based policy
+  allowed_triggers = {
+    APIGatewayAny = {
+      statement_id = "AllowExecutionFromAPIGateway"
+      service      = "apigateway"
+      source_arn   = "${module.api_gateway.apigatewayv2_api_execution_arn}/*/*"
+    }
+  }
+
+  tags = {
+    Name = "my-lambda1"
   }
 }
 
@@ -377,7 +420,6 @@ module "api_gateway" {
   }
 }
 
-
 module "api_gateway_security_group" {
   source  = "terraform-aws-modules/security-group/aws"
   version = "~> 4.0"
@@ -390,41 +432,6 @@ module "api_gateway_security_group" {
   ingress_rules       = ["http-80-tcp"]
 
   egress_rules = ["all-all"]
-}
-
-# Lambda (name=FrontEnd)
-module "lambda_function" {
-  source  = "terraform-aws-modules/lambda/aws"
-  version = "6.5.0"
-
-  function_name = "my-lambda1"
-  description   = "My awesome lambda function"
-  handler       = "hello.handler"
-  runtime       = "nodejs14.x"
-
-  store_on_s3 = true
-  s3_bucket   = module.s3_bucket.s3_bucket_id
-  s3_prefix   = "/front-end"
-  source_path = "../todo-list-front/src"
-
-  ## IAM role
-  role_name = "lambda_execution_role"
-  policy    = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
-  ### Trust relationship policy
-  trusted_entities = ["lambda.amazonaws.com"]
-
-  ## Resource-based policy
-  allowed_triggers = {
-    APIGatewayAny = {
-      statement_id = "AllowExecutionFromAPIGateway"
-      service      = "apigateway"
-      source_arn   = "${module.api_gateway.apigatewayv2_api_execution_arn}/*/*"
-    }
-  }
-
-  tags = {
-    Name = "my-lambda1"
-  }
 }
 
 # TODO: Route53, Cloudfront?
