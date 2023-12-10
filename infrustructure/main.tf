@@ -65,11 +65,12 @@ module "alb" {
   source  = "terraform-aws-modules/alb/aws"
   version = "9.2.0"
 
-  name               = "MainALB"
-  internal           = true
-  vpc_id             = module.vpc.vpc_id
-  subnets            = module.vpc.public_subnets
-  load_balancer_type = "application"
+  name                       = "MainALB"
+  internal                   = true
+  vpc_id                     = module.vpc.vpc_id
+  subnets                    = module.vpc.public_subnets
+  load_balancer_type         = "application"
+  enable_deletion_protection = false
 
   # Security Group
   security_group_ingress_rules = {
