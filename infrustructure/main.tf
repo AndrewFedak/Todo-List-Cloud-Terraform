@@ -1,124 +1,158 @@
-terraform {
-  required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.0"
-    }
-  }
-}
-
-provider "aws" {
+locals {
   region = "eu-north-1"
 }
 
+provider "aws" {
+  region = local.region
+}
+
 # VPC
-resource "aws_vpc" "main" {
-  cidr_block           = "10.0.0.0/16"
-  enable_dns_support   = true
-  enable_dns_hostnames = true
+module "vpc" {
+  source  = "terraform-aws-modules/vpc/aws"
+  version = "5.2.0"
+
+  name = "Terraform VPC"
+  cidr = "10.0.0.0/16"
+
+  azs             = ["${local.region}a", "${local.region}b", "${local.region}c"]
+  private_subnets = ["10.0.1.0/24", "10.0.2.0/24", "10.0.3.0/24"]
+  public_subnets  = ["10.0.101.0/24", "10.0.102.0/24", "10.0.103.0/24"]
+
+  create_igw = true
+}
+
+# S3
+module "s3_bucket" {
+  source = "terraform-aws-modules/s3-bucket/aws"
+
+  bucket                  = "todo-list-terraform"
+  attach_public_policy    = false
+  block_public_acls       = false
+  block_public_policy     = false
+  ignore_public_acls      = false
+  restrict_public_buckets = false
+
+  attach_policy = true
+  policy        = data.aws_iam_policy_document.allow_read_write.json
+
+  versioning = {
+    enabled = false
+  }
+}
+
+data "aws_iam_policy_document" "allow_read_write" {
+  statement {
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    actions = [
+      "s3:GetObject",
+      "s3:PutObject",
+    ]
+
+    resources = [
+      module.s3_bucket.s3_bucket_arn,
+      "${module.s3_bucket.s3_bucket_arn}/*",
+    ]
+  }
+}
+
+# Application Load Balancer (ALB)
+module "alb" {
+  source  = "terraform-aws-modules/alb/aws"
+  version = "9.2.0"
+
+  name               = "MainALB"
+  internal           = true
+  vpc_id             = module.vpc.vpc_id
+  subnets            = module.vpc.public_subnets
+  load_balancer_type = "application"
+
+  # Security Group
+  security_group_ingress_rules = {
+    all_http = {
+      from_port   = 80
+      to_port     = 80
+      ip_protocol = "tcp"
+      description = "HTTP web traffic"
+      cidr_ipv4   = "0.0.0.0/0"
+    }
+    api_gateway_vpc_link = {
+      from_port                    = 80
+      to_port                      = 80
+      ip_protocol                  = "tcp"
+      description                  = "HTTP web traffic"
+      referenced_security_group_id = module.api_gateway_security_group.security_group_id
+    }
+  }
+
+  security_group_egress_rules = {
+    all = {
+      ip_protocol = "-1"
+      cidr_ipv4   = "10.0.0.0/16"
+    }
+  }
+
+  access_logs = {
+    enabled = false
+    bucket  = module.s3_bucket.s3_bucket_arn
+    prefix  = "main-lb-access-logs"
+  }
+
+  listeners = {
+    main = {
+      port     = 80
+      protocol = "HTTP"
+      forward = {
+        target_group_key = "main"
+      }
+    }
+  }
+
+  target_groups = {
+    main = {
+      name              = "MainTargetGroup"
+      create_attachment = false
+      protocol          = "HTTP"
+      port              = 80
+      health_check = {
+        path                = "/health"
+        protocol            = "HTTP"
+        port                = 80
+        healthy_threshold   = 3
+        unhealthy_threshold = 3
+        timeout             = 5
+        interval            = 10
+      }
+    }
+  }
 
   tags = {
-    Name = "${local.tag_prefix}_MainVPC"
+    Environment = "Development"
+    Project     = "Example"
   }
 }
+# resource "aws_lb" "main" {
+#   depends_on = [
+#     aws_s3_bucket_policy.allow_lb_logs
+#   ]
+# }
 
-## Public subnets
-resource "aws_internet_gateway" "main" {
-  vpc_id = aws_vpc.main.id
-
-  tags = {
-    Name = "${local.tag_prefix}_InternetGateway"
-  }
-}
-
-resource "aws_subnet" "public" {
-  count = 3
-
-  vpc_id                  = aws_vpc.main.id
-  cidr_block              = "10.0.${count.index + 3}.0/24"
-  availability_zone       = element(["eu-north-1a", "eu-north-1b", "eu-north-1c"], count.index)
-  map_public_ip_on_launch = true
-
-  tags = {
-    Name = "${local.tag_prefix}_Web_${element(["a", "b", "c"], count.index)}"
-  }
-}
-
-resource "aws_route_table" "public" {
-  vpc_id = aws_vpc.main.id
-
-  route {
-    cidr_block = "10.0.0.0/16"
-    gateway_id = "local"
-  }
-
-  route {
-    cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.main.id
-  }
-
-  tags = {
-    Name = "${local.tag_prefix}_Web_Route_Table"
-  }
-}
-
-resource "aws_route_table_association" "web" {
-  count = length(aws_subnet.public)
-
-  subnet_id      = aws_subnet.public[count.index].id
-  route_table_id = aws_route_table.public.id
-}
-
-## Private subnets
-resource "aws_subnet" "private" {
-  count = 3
-
-  vpc_id                  = aws_vpc.main.id
-  cidr_block              = "10.0.${count.index}.0/24"
-  availability_zone       = element(["eu-north-1a", "eu-north-1b", "eu-north-1c"], count.index)
-  map_public_ip_on_launch = false
-
-  tags = {
-    Name = "${local.tag_prefix}_Data_${element(["a", "b", "c"], count.index)}"
-  }
-}
 
 # Security Groups
-resource "aws_security_group" "web_lb_sg" {
-  name        = "${local.tag_prefix}_Web_LB_SG"
-  description = "Allow Internet inbound traffic"
-  vpc_id      = aws_vpc.main.id
-
-  ingress {
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  egress {
-    from_port        = 0
-    to_port          = 0
-    protocol         = "-1"
-    cidr_blocks      = ["0.0.0.0/0"]
-    ipv6_cidr_blocks = ["::/0"]
-  }
-
-  tags = {
-    Name = "${local.tag_prefix}_Web_LB_SG"
-  }
-}
-
 resource "aws_security_group" "web_sg" {
   name        = "${local.tag_prefix}_Web_SG"
   description = "Allow Load Balancer inbound traffic"
-  vpc_id      = aws_vpc.main.id
+  vpc_id      = module.vpc.vpc_id
 
   ingress {
     from_port       = 80
     to_port         = 80
     protocol        = "tcp"
-    security_groups = [aws_security_group.web_lb_sg.id]
+    security_groups = [module.alb.security_group_id]
   }
 
   ingress {
@@ -144,7 +178,7 @@ resource "aws_security_group" "web_sg" {
 resource "aws_security_group" "data_sg" {
   name        = "${local.tag_prefix}_Data_SG"
   description = "Allow Web Instances inbound traffic"
-  vpc_id      = aws_vpc.main.id
+  vpc_id      = module.vpc.vpc_id
 
   ingress {
     from_port       = 80
@@ -155,94 +189,6 @@ resource "aws_security_group" "data_sg" {
 
   tags = {
     Name = "${local.tag_prefix}_Data_SG"
-  }
-}
-
-# S3
-resource "aws_s3_bucket" "main" {
-  bucket = "todo-list-terraform"
-
-  tags = {
-    Name = "TodoListBucket"
-  }
-}
-
-resource "aws_s3_bucket_public_access_block" "main" {
-  bucket = aws_s3_bucket.main.id
-}
-
-resource "aws_s3_bucket_policy" "allow_lb_logs" {
-  bucket = aws_s3_bucket.main.id
-  policy = data.aws_iam_policy_document.allow_read_write.json
-}
-
-data "aws_iam_policy_document" "allow_read_write" {
-  statement {
-
-    principals {
-      type        = "*"
-      identifiers = ["*"]
-    }
-
-    actions = [
-      "s3:GetObject",
-      "s3:PutObject",
-    ]
-
-    resources = [
-      aws_s3_bucket.main.arn,
-      "${aws_s3_bucket.main.arn}/*",
-    ]
-  }
-}
-
-# Application Load Balancer (ALB)
-resource "aws_lb" "main" {
-  name               = "MainALB"
-  internal           = true
-  load_balancer_type = "application"
-  security_groups    = [aws_security_group.web_lb_sg.id]
-  subnets            = aws_subnet.public[*].id
-
-  enable_deletion_protection = false
-
-  access_logs {
-    enabled = false
-    bucket  = aws_s3_bucket.main.id
-    prefix  = "main-lb-access-logs"
-  }
-
-  depends_on = [
-    aws_s3_bucket_policy.allow_lb_logs
-  ]
-}
-
-## Target Group
-resource "aws_lb_target_group" "main" {
-  name     = "MainTargetGroup"
-  port     = 80
-  protocol = "HTTP"
-  vpc_id   = aws_vpc.main.id
-  health_check {
-    path                = "/health"
-    protocol            = "HTTP"
-    port                = 80
-    healthy_threshold   = 3
-    unhealthy_threshold = 3
-    timeout             = 5
-    interval            = 10
-  }
-}
-
-## Listeners and rules (Application Load Balancer (ALB) -> Target Group)
-resource "aws_lb_listener" "web" {
-  load_balancer_arn = aws_lb.main.arn
-  port              = "80"
-  protocol          = "HTTP"
-
-  default_action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.main.arn
   }
 }
 
@@ -269,30 +215,13 @@ resource "aws_launch_template" "main" {
     }
   }
 }
-## EC2 Instance Profile
-resource "aws_iam_instance_profile" "ec2_s3_rds_instance_profile" {
-  name = "ec2_instance_profile"
-  role = aws_iam_role.ec2_s3_rds_role.name
-}
 
 ## IAM role for EC2 instance (RDS and S3 access)
 resource "aws_iam_role" "ec2_s3_rds_role" {
   name = "ec2_role"
-
+  ### Trust relationship policy
   assume_role_policy = data.aws_iam_policy_document.assume_role.json
 }
-
-resource "aws_iam_role_policy_attachment" "rds_policy" {
-  policy_arn = "arn:aws:iam::aws:policy/AmazonRDSFullAccess"
-  role       = aws_iam_role.ec2_s3_rds_role.name
-}
-
-resource "aws_iam_role_policy_attachment" "s3_policy" {
-  policy_arn = "arn:aws:iam::aws:policy/AmazonS3FullAccess"
-  role       = aws_iam_role.ec2_s3_rds_role.name
-}
-
-### Trust relationship policy
 data "aws_iam_policy_document" "assume_role" {
   statement {
     effect = "Allow"
@@ -306,28 +235,49 @@ data "aws_iam_policy_document" "assume_role" {
   }
 }
 
+## EC2 Instance Profile
+resource "aws_iam_instance_profile" "ec2_s3_rds_instance_profile" {
+  name = "ec2_instance_profile"
+  role = aws_iam_role.ec2_s3_rds_role.name
+}
+## Iam role policy attachement
+resource "aws_iam_role_policy_attachment" "rds_policy" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonRDSFullAccess"
+  role       = aws_iam_role.ec2_s3_rds_role.name
+}
+resource "aws_iam_role_policy_attachment" "s3_policy" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonS3FullAccess"
+  role       = aws_iam_role.ec2_s3_rds_role.name
+}
+##
+
 # Auto Scaling Group
-resource "aws_autoscaling_group" "main" {
+module "asg" {
+  source  = "terraform-aws-modules/autoscaling/aws"
+  version = "7.3.1"
+
+  # Autoscaling group
   name                      = "${local.tag_prefix}_Auto_Scaling_Group"
-  desired_capacity          = 0
   min_size                  = 0
   max_size                  = 4
+  desired_capacity          = 0
   health_check_type         = "EC2"
   health_check_grace_period = 300
   force_delete              = true
-  vpc_zone_identifier       = aws_subnet.public[*].id
+  vpc_zone_identifier = module.vpc.public_subnets
 
-  launch_template {
-    id      = aws_launch_template.main.id
-    version = "$Latest"
-  }
+  # Launch template
+  create_launch_template = false
+  launch_template_id = aws_launch_template.main.id
 
-  target_group_arns = [aws_lb_target_group.main.arn]
-  depends_on        = [aws_lb.main]
+  target_group_arns = [for k, v in module.alb.target_groups : v.arn]
 }
 
 # RDS
-resource "aws_db_instance" "my_rds_instance" {
+module "db" {
+  source     = "terraform-aws-modules/rds/aws"
+  version = "6.3.0"
+
   identifier = "myrdsinstance"
 
   allocated_storage = 20
@@ -342,162 +292,139 @@ resource "aws_db_instance" "my_rds_instance" {
   username = "dbuser"
   password = "dbpassword"
 
-  db_subnet_group_name = aws_db_subnet_group.main.id
-
   publicly_accessible = false
   skip_final_snapshot = true
 
   vpc_security_group_ids = [aws_security_group.data_sg.id]
+
+  # DB subnet group
+  create_db_subnet_group = true
+  subnet_ids             = module.vpc.private_subnets
+
+  # DB parameter group
+  family = "postgres15.3"
 
   tags = {
     Name = "MyRDSInstance"
   }
 }
 
-## DB Subnet group
-resource "aws_db_subnet_group" "main" {
-  name       = "main"
-  subnet_ids = aws_subnet.private[*].id
-
-  tags = {
-    Name = "My DB subnet group"
-  }
-}
-
-# Lambda (name=FrontEnd)
-resource "aws_lambda_function" "front_end" {
-  function_name = "FrontEnd"
-
-  s3_bucket = aws_s3_bucket.main.id
-  s3_key    = aws_s3_object.front_end.key
-
-  runtime = "nodejs14.x"
-  handler = "hello.handler"
-
-  source_code_hash = data.archive_file.front_end.output_base64sha256
-
-  role = aws_iam_role.lambda_execution_role.arn
-}
-
-## Upload Lambda code
-data "archive_file" "front_end" {
-  type = "zip"
-
-  source_dir  = "${path.module}/../todo-list-front"
-  output_path = "${path.module}/todo-list-front.zip"
-}
-
-resource "aws_s3_object" "front_end" {
-  bucket = aws_s3_bucket.main.id
-
-  key    = "front-end.zip"
-  source = data.archive_file.front_end.output_path
-
-  etag = filemd5(data.archive_file.front_end.output_path)
-}
-
-## Resource-based policy
-resource "aws_lambda_permission" "api_gw" {
-  statement_id  = "AllowExecutionFromAPIGateway"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.front_end.function_name
-  principal     = "apigateway.amazonaws.com"
-
-  source_arn = "${aws_apigatewayv2_api.main.execution_arn}/*/*"
-}
-
-## IAM Role for Lambda
-resource "aws_iam_role" "lambda_execution_role" {
-  name = "lambda_execution_role"
-
-  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
-}
-
-resource "aws_iam_role_policy_attachment" "lambda_execution_policy" {
-  role       = aws_iam_role.lambda_execution_role.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
-}
-
-### Trust relationship policy
-data "aws_iam_policy_document" "lambda_assume_role" {
-  statement {
-    effect = "Allow"
-
-    principals {
-      type        = "Service"
-      identifiers = ["lambda.amazonaws.com"]
-    }
-
-    actions = ["sts:AssumeRole"]
-  }
-}
-
 # API Gateway
-resource "aws_apigatewayv2_api" "main" {
-  name          = "Main_HTTP_APIGW"
-  protocol_type = "HTTP"
-}
-
 ## Stages
 resource "aws_apigatewayv2_stage" "dev" {
-  api_id      = aws_apigatewayv2_api.main.id
+  api_id      = module.api_gateway.apigatewayv2_api_id
   name        = "dev"
   auto_deploy = true
 }
 
 resource "aws_apigatewayv2_stage" "test" {
-  api_id      = aws_apigatewayv2_api.main.id
+  api_id      = module.api_gateway.apigatewayv2_api_id
   name        = "test"
   auto_deploy = true
 }
 
-## Front end integration (Lambda)
-resource "aws_apigatewayv2_integration" "front_end" {
-  api_id = aws_apigatewayv2_api.main.id
+module "api_gateway" {
+  source  = "terraform-aws-modules/apigateway-v2/aws"
+  version = "2.2.2"
 
-  integration_uri    = aws_lambda_function.front_end.invoke_arn
-  integration_type   = "AWS_PROXY"
-  integration_method = "POST"
-}
+  name          = "dev-http"
+  description   = "My awesome HTTP API Gateway"
+  protocol_type = "HTTP"
 
-resource "aws_apigatewayv2_route" "front_end" {
-  api_id = aws_apigatewayv2_api.main.id
+  cors_configuration = {
+    allow_headers = ["content-type", "x-amz-date", "authorization", "x-api-key", "x-amz-security-token", "x-amz-user-agent"]
+    allow_methods = ["*"]
+    allow_origins = ["*"]
+  }
 
-  route_key = "$default"
-  target    = "integrations/${aws_apigatewayv2_integration.front_end.id}"
-}
+  # Custom domain
+  create_api_domain_name = false
+  ## domain_name                 = "terraform-aws-modules.modules.tf"
+  ## domain_name_certificate_arn = "arn:aws:acm:eu-west-1:052235179155:certificate/2b3a7ed9-05e1-4f9e-952b-27744ba06da6"
 
-## Back end integration (Load balancer)
-resource "aws_apigatewayv2_vpc_link" "example" {
-  name               = "example"
-  security_group_ids = [aws_security_group.web_lb_sg.id]
-  subnet_ids         = aws_subnet.public[*].id
+  # Access logs
+  # default_stage_access_log_destination_arn = "arn:aws:logs:eu-west-1:835367859851:log-group:debug-apigateway"
+  # default_stage_access_log_format          = "$context.identity.sourceIp - - [$context.requestTime] \"$context.httpMethod $context.routeKey $context.protocol\" $context.status $context.responseLength $context.requestId $context.integrationErrorMessage"
+
+  # Routes and integrations
+  integrations = {
+    "ANY /api/{proxy+}" = {
+      vpc_link           = "api_vpc_alb"
+      connection_type    = "VPC_LINK"
+      integration_uri    = module.alb.listeners["main"].arn
+      integration_type   = "HTTP_PROXY"
+      integration_method = "ANY"
+      request_parameters = jsonencode({
+        "overwrite:path" = "$request.path"
+      })
+    }
+
+    "$default" = {
+      lambda_arn = module.lambda_function.lambda_function_arn
+    }
+  }
+
+  vpc_links = {
+    api_vpc_alb = {
+      name               = "example"
+      security_group_ids = [module.api_gateway_security_group.security_group_id]
+      subnet_ids         = module.vpc.public_subnets
+    }
+  }
 
   tags = {
-    Usage = "example"
+    Name = "http-apigateway"
   }
 }
 
-resource "aws_apigatewayv2_integration" "back_end" {
-  api_id = aws_apigatewayv2_api.main.id
 
-  integration_uri    = aws_lb_listener.web.arn
-  integration_type   = "HTTP_PROXY"
-  integration_method = "ANY"
+module "api_gateway_security_group" {
+  source  = "terraform-aws-modules/security-group/aws"
+  version = "~> 4.0"
 
-  connection_type = "VPC_LINK"
-  connection_id   = aws_apigatewayv2_vpc_link.example.id
+  name        = "api-gateway-sg"
+  description = "API Gateway group for example usage"
+  vpc_id      = module.vpc.vpc_id
 
-  request_parameters = {
-    "overwrite:path" = "$request.path"
-  }
+  ingress_cidr_blocks = ["0.0.0.0/0"]
+  ingress_rules       = ["http-80-tcp"]
+
+  egress_rules = ["all-all"]
 }
 
-resource "aws_apigatewayv2_route" "back_end" {
-  api_id = aws_apigatewayv2_api.main.id
+# Lambda (name=FrontEnd)
+module "lambda_function" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "6.5.0"
 
-  route_key = "ANY /api/{proxy+}"
-  target    = "integrations/${aws_apigatewayv2_integration.back_end.id}"
+  function_name = "my-lambda1"
+  description   = "My awesome lambda function"
+  handler       = "hello.handler"
+  runtime       = "nodejs14.x"
+
+  store_on_s3 = true
+  s3_bucket   = module.s3_bucket.s3_bucket_id
+  s3_prefix   = "/front-end"
+  source_path = "../todo-list-front/src"
+
+  ## IAM role
+  role_name = "lambda_execution_role"
+  policy    = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+  ### Trust relationship policy
+  trusted_entities = ["lambda.amazonaws.com"]
+
+  ## Resource-based policy
+  allowed_triggers = {
+    APIGatewayAny = {
+      statement_id = "AllowExecutionFromAPIGateway"
+      service      = "apigateway"
+      source_arn   = "${module.api_gateway.apigatewayv2_api_execution_arn}/*/*"
+    }
+  }
+
+  tags = {
+    Name = "my-lambda1"
+  }
 }
 
 # TODO: Route53, Cloudfront?
