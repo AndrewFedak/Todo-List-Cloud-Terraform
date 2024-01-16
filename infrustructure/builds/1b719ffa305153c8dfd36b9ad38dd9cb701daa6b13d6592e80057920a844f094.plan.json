@@ -1,0 +1,1 @@
+{"filename": "builds\\1b719ffa305153c8dfd36b9ad38dd9cb701daa6b13d6592e80057920a844f094.zip", "runtime": "nodejs14.x", "artifacts_dir": "builds", "build_plan": [["zip", "../todo-list-front/lambda", null]]}
