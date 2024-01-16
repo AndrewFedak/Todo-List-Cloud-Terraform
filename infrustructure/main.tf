@@ -26,7 +26,7 @@ module "s3_bucket" {
   source  = "terraform-aws-modules/s3-bucket/aws"
   version = "3.15.1"
 
-  bucket                  = "todo-list-terraform"
+  bucket                  = "todo-list-terraform-managed"
   attach_public_policy    = true
   block_public_acls       = false
   block_public_policy     = false
@@ -74,13 +74,6 @@ module "alb" {
 
   # Security Group
   security_group_ingress_rules = {
-    all_http = {
-      from_port   = 80
-      to_port     = 80
-      ip_protocol = "tcp"
-      description = "HTTP web traffic"
-      cidr_ipv4   = "0.0.0.0/0"
-    }
     api_gateway_vpc_link = {
       from_port                    = 80
       to_port                      = 80
@@ -136,12 +129,6 @@ module "alb" {
     Project     = "Example"
   }
 }
-# resource "aws_lb" "main" {
-#   depends_on = [
-#     aws_s3_bucket_policy.allow_lb_logs
-#   ]
-# }
-
 
 # Security Groups
 resource "aws_security_group" "web_sg" {
@@ -327,8 +314,9 @@ module "lambda_function" {
   description   = "My awesome lambda function"
   handler       = "hello.handler"
   runtime       = "nodejs14.x"
+  
   publish       = true
-
+  
   store_on_s3 = true
   s3_bucket   = module.s3_bucket.s3_bucket_id
   source_path = "../todo-list-front/lambda"
@@ -387,8 +375,8 @@ module "api_gateway" {
   ## domain_name_certificate_arn = "arn:aws:acm:eu-west-1:052235179155:certificate/2b3a7ed9-05e1-4f9e-952b-27744ba06da6"
 
   # Access logs
-  # default_stage_access_log_destination_arn = "arn:aws:logs:eu-west-1:835367859851:log-group:debug-apigateway"
-  # default_stage_access_log_format          = "$context.identity.sourceIp - - [$context.requestTime] \"$context.httpMethod $context.routeKey $context.protocol\" $context.status $context.responseLength $context.requestId $context.integrationErrorMessage"
+  ## default_stage_access_log_destination_arn = "arn:aws:logs:eu-west-1:835367859851:log-group:debug-apigateway"
+  ## default_stage_access_log_format          = "$context.identity.sourceIp - - [$context.requestTime] \"$context.httpMethod $context.routeKey $context.protocol\" $context.status $context.responseLength $context.requestId $context.integrationErrorMessage"
 
   # Routes and integrations
   integrations = {
@@ -433,6 +421,21 @@ module "api_gateway_security_group" {
   ingress_rules       = ["http-80-tcp"]
 
   egress_rules = ["all-all"]
+}
+
+output "default_apigatewayv2_stage_invoke_url" {
+  value       = module.api_gateway.default_apigatewayv2_stage_invoke_url
+  description = "Api Gateway Default Stage Invoke Url"
+}
+
+output "aws_apigatewayv2_stage_dev" {
+  value       = aws_apigatewayv2_stage.dev.invoke_url
+  description = "Api Gateway Dev Stage Invoke Url"
+}
+
+output "aws_apigatewayv2_stage_test" {
+  value       = aws_apigatewayv2_stage.test.invoke_url
+  description = "Api Gateway Test Stage Invoke Url"
 }
 
 # TODO: Route53, Cloudfront?
